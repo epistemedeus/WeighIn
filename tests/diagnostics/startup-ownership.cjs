@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
-const script = path.resolve(__dirname, '../../scripts/start-local-network.sh');
+const script = process.argv[2] ? path.resolve(process.argv[2]) : path.resolve(__dirname, '../../scripts/start-local-network.sh');
 const source = fs.readFileSync(script);
 function probe(scenario) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'weighin-ownership-probe-'));
@@ -19,11 +19,12 @@ fs.appendFileSync(process.env.PROBE_LOG,JSON.stringify(a)+'\\n');
 if(a[0]==='ps'&&process.env.PROBE_SCENARIO==='unowned')console.log('unrelated-id');
 if(a[0]==='inspect')console.log('another-owner');
 if(a[0]==='run')console.log('this-attempt-id');
-if(a[0]==='logs')console.log('retained failure diagnostic');
+if(a[0]==='logs'){if(process.env.PROBE_SCENARIO==='logs-failure')process.exit(7);console.log('retained failure diagnostic');}
+if(a[0]==='rm'&&process.env.PROBE_SCENARIO==='cleanup-failure')process.exit(9);
 `);
     fs.writeFileSync(path.join(dir, 'node'), `#!${process.execPath}
 if(process.argv[2]==='-e')process.exit(0);
-if(process.env.PROBE_SCENARIO==='failure'){
+if(['failure','logs-failure','cleanup-failure'].includes(process.env.PROBE_SCENARIO)){
  console.error('injected readiness failure');process.exit(1);
 }
 console.log('network is ready');
@@ -52,13 +53,17 @@ assert.equal(failure.calls.filter(a => a[0] === 'run').length, 1);
 assert.equal(failure.calls.filter(a => a[0] === 'logs').length, 1);
 const cleanup = failure.calls.findIndex(a => ['stop', 'rm'].includes(a[0]) && a.includes('this-attempt-id'));
 const logIndex = failure.calls.findIndex(a => a[0] === 'logs');
+const logsFailure = probe('logs-failure');
+const cleanupFailure = probe('cleanup-failure');
+assert.equal(logsFailure.exit, 1);
+assert.equal(cleanupFailure.exit, 1);
 const report = {
   schema: 'weighin.startup-ownership-probe.v1',
   scriptSha256: createHash('sha256').update(source).digest('hex'),
-  controls: { successRetainsSidecar: true, unownedCollisionPreserved: true, readinessFailureStaysFailure: true },
+  controls: { successRetainsSidecar: true, unownedCollisionPreserved: true, readinessFailureStaysFailure: true, logFailureStaysFailure: true, cleanupFailureStaysFailure: true },
   acceptance: { failureLogsCaptured: logIndex >= 0, ownedContainerCleaned: cleanup >= 0,
     logsBeforeOwnedCleanup: cleanup > logIndex && logIndex >= 0 },
-  runs: [ready, collision, failure],
+  runs: [ready, collision, failure, logsFailure, cleanupFailure],
 };
 console.log(JSON.stringify(report, null, 2));
 // Exit 2 means the requested cleanup contract remains unmet, not a harness crash.
